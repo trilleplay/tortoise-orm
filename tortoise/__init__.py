@@ -33,7 +33,7 @@ class Tortoise:
 
     @classmethod
     def get_connection(cls, connection_name: str) -> BaseDBAsyncClient:
-        return cls._connections[connection_name]
+        return current_transaction_map[connection_name].get() or cls._connections[connection_name]
 
     @classmethod
     def _init_relations(cls) -> None:

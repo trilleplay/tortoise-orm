@@ -12,6 +12,7 @@ from tortoise.backends.base.client import (
     BaseTransactionWrapper,
     Capabilities,
     ConnectionWrapper,
+    NonLockedConnectionWrapper,
 )
 from tortoise.backends.sqlite.executor import SqliteExecutor
 from tortoise.backends.sqlite.schema_generator import SqliteSchemaGenerator
@@ -40,9 +41,6 @@ class SqliteClient(BaseDBAsyncClient):
     def __init__(self, file_path: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.filename = file_path
-        self._transaction_class = type(
-            "TransactionWrapper", (TransactionWrapper, self.__class__), {}
-        )
         self._connection = None  # type: Optional[aiosqlite.Connection]
         self._lock = asyncio.Lock()
 
@@ -78,7 +76,7 @@ class SqliteClient(BaseDBAsyncClient):
         return ConnectionWrapper(self._connection, self._lock)
 
     def _in_transaction(self) -> "TransactionWrapper":
-        return self._transaction_class(self.connection_name, self._connection, self._lock)
+        return TransactionWrapper(self.connection_name, self._connection, self._lock)
 
     @translate_exceptions
     async def execute_insert(self, query: str, values: list) -> int:
@@ -100,17 +98,27 @@ class SqliteClient(BaseDBAsyncClient):
 
 
 class TransactionWrapper(SqliteClient, BaseTransactionWrapper):
-    def __init__(self, connection_name: str, connection: aiosqlite.Connection, lock) -> None:
+    def __init__(
+        self, connection_name: str, connection: aiosqlite.Connection, lock: Optional[asyncio.Lock]
+    ) -> None:
         self.connection_name = connection_name
         self._connection = connection  # type: aiosqlite.Connection
-        self._lock = lock
+        self._lock = lock  # type: ignore
         self.log = logging.getLogger("db_client")
         self._transaction_class = self.__class__
         self._old_context_value = None
         self._finalized = False
 
+    def acquire_connection(self) -> ConnectionWrapper:
+        return NonLockedConnectionWrapper(self._connection)
+
+    def _in_transaction(self) -> "TransactionWrapper":
+        return TransactionWrapper(self.connection_name, self._connection, None)
+
     async def start(self) -> None:
         try:
+            if self._lock:
+                await self._lock.acquire()
             await self._connection.commit()
             await self._connection.execute("BEGIN")
         except sqlite3.OperationalError as exc:  # pragma: nocoverage
@@ -124,6 +132,8 @@ class TransactionWrapper(SqliteClient, BaseTransactionWrapper):
             raise TransactionManagementError("Transaction already finalised")
         self._finalized = True
         await self._connection.rollback()
+        if self._lock:
+            self._lock.release()
         current_transaction_map[self.connection_name].set(self._old_context_value)
 
     async def commit(self) -> None:
@@ -131,4 +141,6 @@ class TransactionWrapper(SqliteClient, BaseTransactionWrapper):
             raise TransactionManagementError("Transaction already finalised")
         self._finalized = True
         await self._connection.commit()
+        if self._lock:
+            self._lock.release()
         current_transaction_map[self.connection_name].set(self._old_context_value)

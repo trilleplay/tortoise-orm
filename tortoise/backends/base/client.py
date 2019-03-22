@@ -108,6 +108,17 @@ class ConnectionWrapper:
         self.lock.release()
 
 
+class NonLockedConnectionWrapper(ConnectionWrapper):
+    def __init__(self, connection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
+
+
 class BaseTransactionWrapper:
     async def start(self) -> None:
         raise NotImplementedError()  # pragma: nocoverage
