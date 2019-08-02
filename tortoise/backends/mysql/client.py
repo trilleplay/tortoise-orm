@@ -112,6 +112,7 @@ class MySQLClient(BaseDBAsyncClient):
             "host": self.host,
             "port": self.port,
             "user": self.user,
+            "charset": "utf-8",
             "db": self.database if with_db else None,
             "autocommit": True,
             **self.extra,
